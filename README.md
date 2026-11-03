@@ -72,14 +72,18 @@ replaces its bars and **resets its session**.
 
 ## Controls
 
-**Top bar** — symbol · timeframe dropdown (1m…1D) · `✎` freehand · `╱` trend line ·
-`▭` area box · `⌫` clear drawings · `EQ` equity pane on/off · `CSV` load ·
-`STATS` · `RST` reset session · `🗑` delete symbol.
+**Top bar** — ticker box (tap it to load CSVs; last entry in the list is "＋ Load CSV…") ·
+timeframe (1m…1D) · drawing-tools dropdown (freehand, trend line, area box, clear) ·
+indicators · stats · reset session · delete symbol.
+
+**Indicators** — tap the wave icon. Volume and Delta volume are on by default and can be toggled off.
+Add as many SMA / EMA / Bollinger Bands / Stochastic as you like and edit lengths live.
+Your choices are remembered across symbols.
 
 **Readout rows** — symbol/time/bar counter, then O H L C V Δ for the current bar,
-then position, unrealised P/L, cash and equity.
+then position, unrealised P/L, cash and equity, then live indicator values.
 
-**Panes** — candles, volume, delta volume, equity curve (dashed line = starting cash).
+**Panes** — candles plus whichever indicator panes you have switched on. The equity curve now lives in Stats.
 
 **Order pad** — BUY / SELL go in all-in at the current close. FLAT closes.
 BUY STP / SELL STP drop a stop line near price; **drag it anywhere with your finger**.
@@ -101,7 +105,7 @@ the session. Drawings survive.
 
 ## Stats
 
-`STATS` any time, or automatically at `⏭` / end of autoplay:
+`STATS` (bar-chart icon) any time, or automatically at `⏭` / end of autoplay:
 
 cash start → end, P/L and %, max drawdown, buy-&-hold P/L and drawdown over the exact same
 replayed period, the difference against that benchmark, closed trades, win rate, profit
