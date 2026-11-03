@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#0b0e13">
+<link rel="manifest" href="manifest.json">
+<title>Replay</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:#0b0e13;color:#c9d1d9;font:12px/1.25 system-ui,sans-serif;overflow:hidden;overscroll-behavior:none}
+#app{display:flex;flex-direction:column;height:100dvh}
+#bar{display:flex;gap:4px;align-items:center;padding:4px;background:#11161f;flex-wrap:wrap;flex:0 0 auto}
+select,#bar button,#tools button{background:#1b2230;color:#c9d1d9;border:1px solid #2b3545;border-radius:5px;padding:5px 7px;font:12px system-ui}
+#ohlc{padding:3px 6px;background:#0d1219;font:11px/1.35 ui-monospace,SFMono-Regular,monospace;border-bottom:1px solid #1b2230;flex:0 0 auto;white-space:nowrap;overflow-x:auto}
+#ohlc b{font-weight:600}
+#acct{padding:3px 6px;background:#0d1219;font:11px/1.35 ui-monospace,monospace;border-bottom:1px solid #1b2230;flex:0 0 auto;white-space:nowrap;overflow-x:auto}
+#cv{flex:1 1 auto;min-height:0;width:100%;touch-action:none;display:block}
+#pad{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:4px;background:#11161f;flex:0 0 auto}
+#pad button{padding:12px 2px;font:600 12px system-ui;border:0;border-radius:7px}
+.b{background:#2ea043;color:#fff}.s{background:#d1343f;color:#fff}.f{background:#8b949e;color:#0b0e13}
+.bs{background:#1f6f36;color:#fff}.ss{background:#8e2630;color:#fff}
+#nav{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:4px 4px calc(4px + env(safe-area-inset-bottom));background:#11161f;flex:0 0 auto}
+#nav button{padding:14px 0;font:600 14px system-ui;background:#1b2230;color:#c9d1d9;border:1px solid #2b3545;border-radius:7px}
+button:active{filter:brightness(1.35)}
+.on{outline:2px solid #58a6ff;outline-offset:-2px}
+#modal{position:fixed;inset:0;background:#000c;display:none;align-items:center;justify-content:center;padding:14px;z-index:9}
+#box{background:#11161f;border:1px solid #2b3545;border-radius:10px;padding:14px;max-width:460px;width:100%;max-height:85dvh;overflow:auto}
+#box h3{margin:0 0 8px}
+#box table{width:100%;border-collapse:collapse;font:12px ui-monospace,monospace}
+#box td{padding:3px 0;border-bottom:1px solid #1b2230}
+#box td:last-child{text-align:right}
+.pos{color:#2ea043}.neg{color:#d1343f}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="bar">
+    <select id="sym" title="symbol"></select>
+    <select id="tfsel" title="timeframe"></select>
+    <div id="tools" style="display:flex;gap:4px">
+      <button id="t-pen" data-t="pen" title="freehand">✎</button>
+      <button id="t-line" data-t="line" title="trend line">╱</button>
+      <button id="t-box" data-t="box" title="area box">▭</button>
+      <button id="t-clr" title="clear drawings">⌫</button>
+    </div>
+    <button id="eqt" title="equity pane">EQ</button>
+    <button id="load">CSV</button><input id="file" type="file" accept=".csv,.txt" hidden multiple>
+    <button id="stats">STATS</button>
+    <button id="reset" title="reset session">RST</button>
+    <button id="del" title="delete symbol">🗑</button>
+  </div>
+  <div id="ohlc"></div>
+  <div id="acct"></div>
+  <canvas id="cv"></canvas>
+  <div id="pad">
+    <button class="b" data-a="buy">BUY</button>
+    <button class="s" data-a="sell">SELL</button>
+    <button class="f" data-a="flat">FLAT</button>
+    <button class="bs" data-a="buystop">BUY STP</button>
+    <button class="ss" data-a="sellstop">SELL STP</button>
+  </div>
+  <div id="nav">
+    <button id="b10">◀◀</button><button id="back">◀</button>
+    <button id="play">▶‖</button>
+    <button id="fwd">▶</button><button id="end">⏭</button>
+  </div>
+</div>
+<div id="modal"><div id="box"></div></div>
+<script>
+/* ============ storage ============ */
+let db;
+const idb=()=>new Promise(r=>{const q=indexedDB.open('replay',1);
+  q.onupgradeneeded=e=>e.target.result.createObjectStore('d');
+  q.onsuccess=e=>{db=e.target.result;r()}});
+const put=(k,v)=>new Promise(r=>{db.transaction('d','readwrite').objectStore('d').put(v,k).onsuccess=()=>r()});
+const get=k=>new Promise(r=>{const q=db.transaction('d').objectStore('d').get(k);q.onsuccess=()=>r(q.result)});
+const keys=()=>new Promise(r=>{const q=db.transaction('d').objectStore('d').getAllKeys();q.onsuccess=()=>r(q.result)});
+const del=k=>new Promise(r=>{db.transaction('d','readwrite').objectStore('d').delete(k).onsuccess=()=>r()});
+
+/* ============ state ============ */
+const TFS=[1,2,3,5,15,30,60,240,1440];
+const TFL=t=>t<60?t+'m':t<1440?(t/60)+'h':'1D';
+const CASH0=10000;
+let S={sym:null,m1:[],tf:5,i:0,start:0,
+       cash:CASH0,qty:0,entry:0,stop:null,
+       trades:[],eq:[],snap:[],          // snap[i] = state after bar i
+       draw:[],tool:null,cur:null,showEq:true,play:0,drag:null};
+
+/* ============ CSV ============ */
+function parseCSV(txt){
+  const L=txt.trim().split(/\r?\n/);
+  let h=L[0].toLowerCase().split(/[,;\t]/).map(s=>s.trim()),st=1;
+  if(!h.some(x=>/open/.test(x))){h=['time','open','high','low','close','volume','delta'];st=0}
+  const ix=n=>h.findIndex(x=>x.startsWith(n));
+  const it=ix('t')>=0?ix('t'):ix('d'),io=ix('o'),ih=ix('h'),il=ix('l'),ic=ix('c'),iv=ix('v'),
+        id=h.findIndex(x=>x.startsWith('delta'));
+  const out=[];
+  for(let k=st;k<L.length;k++){
+    const p=L[k].split(/[,;\t]/);if(p.length<5)continue;
+    const o=+p[io],hi=+p[ih],lo=+p[il],c=+p[ic];
+    if(!isFinite(o)||!isFinite(c))continue;
+    const t=(p[it]||'').trim();
+    let ts=/^\d{9,}$/.test(t)?+t*(t.length<=10?1000:1):Date.parse(t.replace(' ','T'));
+    if(!isFinite(ts))ts=k*60000;
+    const v=iv>=0?+p[iv]||0:0;
+    out.push({t:ts,o,h:hi,l:lo,c,v,d:id>=0&&isFinite(+p[id])?+p[id]:(c>=o?v:-v)});
+  }
+  out.sort((a,b)=>a.t-b.t);
+  return out;
+}
+
+/* ============ aggregation ============ */
+function agg(){
+  const n=S.tf,src=S.m1,end=S.i+1;
+  if(n===1)return src.slice(0,end);
+  const ms=n*60000,out=[];let cb=null,bk=null;
+  for(let k=0;k<end;k++){
+    const b=src[k],key=Math.floor(b.t/ms);
+    if(key!==bk){if(cb)out.push(cb);cb={t:key*ms,o:b.o,h:b.h,l:b.l,c:b.c,v:b.v,d:b.d};bk=key}
+    else{cb.h=Math.max(cb.h,b.h);cb.l=Math.min(cb.l,b.l);cb.c=b.c;cb.v+=b.v;cb.d+=b.d}
+  }
+  if(cb)out.push(cb);
+  return out;
+}
+
+/* ============ account ============ */
+const price=()=>S.m1[S.i]?S.m1[S.i].c:0;
+const equity=()=>S.cash+S.qty*price();
+function snapshot(){S.snap[S.i]={cash:S.cash,qty:S.qty,entry:S.entry,stop:S.stop?{...S.stop}:null,nt:S.trades.length};
+  S.eq[S.i]=equity()}
+function restore(i){
+  const s=S.snap[i];if(!s)return;
+  S.cash=s.cash;S.qty=s.qty;S.entry=s.entry;S.stop=s.stop?{...s.stop}:null;
+  S.trades.length=s.nt;S.eq.length=i+1;S.snap.length=i+1;
+}
+function fill(side,px){
+  const b=S.m1[S.i];
+  if(S.qty===0){
+    const q=Math.max(1,Math.floor(equity()/px))*side;
+    S.qty=q;S.cash-=q*px;S.entry=px;
+    S.trades.push({t:b.t,i:S.i,k:'open',side,px,qty:q});
+  }else if(Math.sign(S.qty)!==side){
+    S.cash+=S.qty*px;
+    S.trades.push({t:b.t,i:S.i,k:'close',side:-Math.sign(S.qty),px,qty:S.qty,pnl:(px-S.entry)*S.qty});
+    S.qty=0;S.entry=0;S.stop=null;
+  }
+  snapshot();
+}
+const flat=()=>{if(S.qty)fill(-Math.sign(S.qty),price());else{S.stop=null;snapshot()}};
+function checkStop(b){
+  if(!S.stop)return;
+  const{side,p}=S.stop;            // buy stop fires above, sell stop below;
+  if(side==='buy'&&b.h>=p){S.stop=null;fill(1,p)}        // fill() opens if flat, closes if short
+  else if(side==='sell'&&b.l<=p){S.stop=null;fill(-1,p)}
+}
+
+/* ============ canvas ============ */
+const cv=document.getElementById('cv'),cx=cv.getContext('2d');
+let V={w:0,h:0,ch:0,p0:0,p1:1,bw:1,first:0,ms:60000,t0:0,vis:[]};
+const VIS=80;
+function resize(){const r=cv.getBoundingClientRect(),d=devicePixelRatio||1;
+  cv.width=r.width*d;cv.height=r.height*d;cx.setTransform(d,0,0,d,0,0);V.w=r.width;V.h=r.height;draw()}
+addEventListener('resize',resize);
+const yP=p=>V.ch-(p-V.p0)/(V.p1-V.p0)*V.ch;
+const pY=y=>V.p0+(V.ch-y)/V.ch*(V.p1-V.p0);
+const xB=k=>k*V.bw+V.bw/2;
+const bX=x=>V.first+Math.round((x-V.bw/2)/V.bw);
+// timestamp -> x. Exact bucket if on screen, else extrapolate from the last bar
+// (so drawings made on a 60m chart land on the right 1m bars and vice-versa).
+const xT=ts=>{const k=Math.floor(ts/V.ms)*V.ms;
+  if(V.tmap.has(k))return xB(V.tmap.get(k));
+  if(!V.vis.length)return 0;
+  const last=V.vis[V.vis.length-1];
+  return xB(V.vis.length-1+(k-last.t)/V.ms)};
+const Tx=x=>{const k=bX(x);return V.vis[Math.max(0,Math.min(V.vis.length-1,k-V.first))]?.t ??
+  (V.vis.length?V.vis[V.vis.length-1].t+(k-V.first-V.vis.length+1)*V.ms:0)};
+
+function draw(){
+  const W=V.w,H=V.h;if(!W)return;
+  cx.fillStyle='#0b0e13';cx.fillRect(0,0,W,H);
+  const bars=agg();if(!bars.length)return;
+  const first=Math.max(0,bars.length-VIS),vis=bars.slice(first);
+  const gap=3,volH=H*0.13,dH=H*0.13,eqH=S.showEq?H*0.15:0;
+  const ch=H-volH-dH-eqH-gap*(S.showEq?3:2);
+  let lo=1e18,hi=-1e18;for(const b of vis){lo=Math.min(lo,b.l);hi=Math.max(hi,b.h)}
+  if(S.stop){lo=Math.min(lo,S.stop.p);hi=Math.max(hi,S.stop.p)}
+  const pad=(hi-lo)*0.06||1;lo-=pad;hi+=pad;
+  const bw=W/VIS,cw=Math.max(1,bw*0.62);
+  V.ms=S.tf*60000;V.tmap=new Map(vis.map((b,k)=>[b.t,k]));
+  Object.assign(V,{w:W,h:H,ch,p0:lo,p1:hi,bw,first:0,vis,t0:vis[0].t,volH,dH,eqH,gap});
+
+  // grid
+  cx.strokeStyle='#161c27';cx.lineWidth=1;
+  for(let g=1;g<4;g++){const y=ch*g/4;cx.beginPath();cx.moveTo(0,y);cx.lineTo(W,y);cx.stroke()}
+  // boxes behind candles
+  for(const d of S.draw)if(d.k==='box'){
+    cx.fillStyle='#58a6ff22';cx.strokeStyle='#58a6ff66';
+    const x1=xT(d.p[0][0]),x2=xT(d.p[1][0]),y1=yP(d.p[0][1]),y2=yP(d.p[1][1]);
+    cx.fillRect(Math.min(x1,x2),Math.min(y1,y2),Math.abs(x2-x1),Math.abs(y2-y1));
+    cx.strokeRect(Math.min(x1,x2),Math.min(y1,y2),Math.abs(x2-x1),Math.abs(y2-y1));
+  }
+  // candles
+  vis.forEach((b,k)=>{
+    const col=b.c>=b.o?'#2ea043':'#d1343f';
+    cx.strokeStyle=col;cx.fillStyle=col;
+    const x=Math.round(xB(k))+.5;
+    cx.beginPath();cx.moveTo(x,yP(b.h));cx.lineTo(x,yP(b.l));cx.stroke();
+    const yo=yP(b.o),yc=yP(b.c);
+    cx.fillRect(x-cw/2,Math.min(yo,yc),cw,Math.max(1,Math.abs(yc-yo)));
+  });
+  // volume
+  const vTop=ch+gap,mv=Math.max(...vis.map(b=>b.v))||1;
+  vis.forEach((b,k)=>{cx.fillStyle=b.c>=b.o?'#20502f':'#5c2026';
+    const h=b.v/mv*volH;cx.fillRect(xB(k)-cw/2,vTop+volH-h,cw,h)});
+  cx.fillStyle='#4d5666';cx.font='9px ui-monospace';cx.fillText('VOL',2,vTop+9);
+  // delta
+  const dTop=vTop+volH+gap,md=Math.max(...vis.map(b=>Math.abs(b.d)))||1,mid=dTop+dH/2;
+  cx.strokeStyle='#222b39';cx.beginPath();cx.moveTo(0,mid);cx.lineTo(W,mid);cx.stroke();
+  vis.forEach((b,k)=>{cx.fillStyle=b.d>=0?'#2ea043':'#d1343f';
+    const h=b.d/md*(dH/2);cx.fillRect(xB(k)-cw/2,h>=0?mid-h:mid,cw,Math.max(1,Math.abs(h)))});
+  cx.fillStyle='#4d5666';cx.fillText('ΔVOL',2,dTop+9);
+  // equity curve (sampled at the 1m bar closing each visible tf bar)
+  if(S.showEq){
+    const eTop=dTop+dH+gap,pts=[];
+    vis.forEach((b,k)=>{
+      let j=-1;for(let q=Math.min(S.i,S.eq.length-1);q>=0;q--){if(S.m1[q].t<b.t+V.ms){j=q;break}}
+      if(j>=0&&S.eq[j]!=null)pts.push([xB(k),S.eq[j]]);
+    });
+    if(pts.length>1){
+      let el=Math.min(...pts.map(p=>p[1]),CASH0),eh=Math.max(...pts.map(p=>p[1]),CASH0);
+      if(eh-el<1){eh+=1;el-=1}
+      const ey=v=>eTop+eqH-(v-el)/(eh-el)*eqH;
+      cx.strokeStyle='#484f5c';cx.setLineDash([3,3]);cx.beginPath();
+      cx.moveTo(0,ey(CASH0));cx.lineTo(W,ey(CASH0));cx.stroke();cx.setLineDash([]);
+      cx.strokeStyle=pts[pts.length-1][1]>=CASH0?'#2ea043':'#d1343f';cx.lineWidth=1.5;
+      cx.beginPath();pts.forEach((p,k)=>k?cx.lineTo(p[0],ey(p[1])):cx.moveTo(p[0],ey(p[1])));cx.stroke();
+      cx.lineWidth=1;
+    }
+    cx.fillStyle='#4d5666';cx.fillText('EQUITY',2,eTop+9);
+  }
+  // trade markers
+  for(const t of S.trades){
+    const x=xT(t.t),y=yP(t.px),up=t.side>0;
+    cx.fillStyle=t.k==='open'?(up?'#2ea043':'#d1343f'):'#58a6ff';
+    cx.beginPath();
+    if(up){cx.moveTo(x,y-9);cx.lineTo(x-5,y-1);cx.lineTo(x+5,y-1)}
+    else{cx.moveTo(x,y+9);cx.lineTo(x-5,y+1);cx.lineTo(x+5,y+1)}
+    cx.closePath();cx.fill();
+    cx.font='9px ui-monospace';
+    cx.fillText(t.k==='open'?'O':'C',x+6,up?y-3:y+9);
+  }
+  // lines: entry + stop
+  const hline=(p,c,lbl)=>{const y=yP(p);if(y<-10||y>ch+10)return;
+    cx.strokeStyle=c;cx.setLineDash([5,4]);cx.beginPath();cx.moveTo(0,y);cx.lineTo(W,y);cx.stroke();cx.setLineDash([]);
+    cx.fillStyle=c;cx.font='10px ui-monospace';cx.fillText(lbl,3,y-3)};
+  if(S.qty)hline(S.entry,'#58a6ff','ENTRY '+S.entry.toFixed(2));
+  if(S.stop){
+    hline(S.stop.p,'#d29922',(S.stop.side==='buy'?'BUY':'SELL')+' STOP '+S.stop.p.toFixed(2)+'  ⇕ drag');
+    cx.fillStyle='#d29922';cx.fillRect(W-16,yP(S.stop.p)-7,14,14);
+  }
+  // freehand + trend lines
+  for(const d of S.draw.concat(S.cur?[S.cur]:[])){
+    if(d.k==='box')continue;
+    cx.strokeStyle=d.k==='line'?'#e3b341':'#e3b341';cx.lineWidth=d.k==='line'?1.8:1.4;
+    cx.beginPath();d.p.forEach((q,k)=>{const x=xT(q[0]),y=yP(q[1]);k?cx.lineTo(x,y):cx.moveTo(x,y)});
+    cx.stroke();cx.lineWidth=1;
+  }
+  if(S.cur&&S.cur.k==='box'){
+    cx.strokeStyle='#58a6ff';const x1=xT(S.cur.p[0][0]),x2=xT(S.cur.p[1][0]),y1=yP(S.cur.p[0][1]),y2=yP(S.cur.p[1][1]);
+    cx.strokeRect(Math.min(x1,x2),Math.min(y1,y2),Math.abs(x2-x1),Math.abs(y2-y1));
+  }
+}
+
+/* ============ readouts ============ */
+function info(){
+  const b=S.m1[S.i];
+  const o=document.getElementById('ohlc'),a=document.getElementById('acct');
+  if(!b){o.textContent='no data — load a CSV';a.textContent='';return}
+  const col=b.c>=b.o?'#2ea043':'#d1343f',f=n=>n.toLocaleString(undefined,{maximumFractionDigits:2});
+  o.innerHTML=`<b>${S.sym}</b> ${TFL(S.tf)} · ${new Date(b.t).toLocaleString()} · bar ${S.i+1}/${S.m1.length}<br>`+
+    `<span style="color:${col}">O ${b.o} &nbsp;H ${b.h} &nbsp;L ${b.l} &nbsp;C ${b.c}</span>`+
+    ` &nbsp;V ${f(b.v)} &nbsp;Δ ${f(b.d)}`;
+  const eq=equity(),up=S.qty?(b.c-S.entry)*S.qty:0,ret=(eq/CASH0-1)*100;
+  const cls=v=>v>=0?'pos':'neg';
+  a.innerHTML=`${S.qty>0?'LONG':S.qty<0?'SHORT':'FLAT'} ${S.qty?Math.abs(S.qty)+'@'+S.entry.toFixed(2):''}`+
+    ` · uPnL <span class="${cls(up)}">${f(up)}</span>`+
+    ` · cash ${f(S.cash)} · equity <b class="${cls(eq-CASH0)}">${f(eq)}</b>`+
+    ` (<span class="${cls(ret)}">${ret>=0?'+':''}${ret.toFixed(2)}%</span>)`+
+    ` · trades ${S.trades.filter(t=>t.k==='close').length}`;
+}
+
+/* ============ navigation ============ */
+function step(d){
+  if(!S.m1.length)return;
+  const ni=Math.min(S.m1.length-1,Math.max(S.start,S.i+d));
+  if(d>0){for(let k=S.i+1;k<=ni;k++){S.i=k;checkStop(S.m1[k]);snapshot()}}
+  else{S.i=ni;restore(ni)}
+  S.i=ni;save();info();draw();
+}
+const stop=()=>{if(S.play){clearInterval(S.play);S.play=0}};
+document.getElementById('fwd').onclick=()=>{stop();step(1)};
+document.getElementById('back').onclick=()=>{stop();step(-1)};
+document.getElementById('b10').onclick=()=>{stop();step(-10)};
+document.getElementById('end').onclick=()=>{stop();step(S.m1.length);showStats()};
+document.getElementById('play').onclick=()=>{S.play?stop():S.play=setInterval(()=>{
+  if(S.i>=S.m1.length-1){stop();showStats()}else step(1)},350)};
+
+/* ============ timeframe ============ */
+const tfsel=document.getElementById('tfsel');
+tfsel.innerHTML=TFS.map(t=>`<option value="${t}">${TFL(t)}</option>`).join('');
+tfsel.onchange=()=>{S.tf=+tfsel.value;save();info();draw()};
+
+/* ============ tools ============ */
+document.querySelectorAll('#tools button[data-t]').forEach(btn=>btn.onclick=()=>{
+  S.tool=S.tool===btn.dataset.t?null:btn.dataset.t;
+  document.querySelectorAll('#tools button[data-t]').forEach(b=>b.classList.toggle('on',b.dataset.t===S.tool));
+});
+document.getElementById('t-clr').onclick=()=>{if(S.draw.length&&confirm('Clear drawings?')){S.draw=[];save();draw()}};
+document.getElementById('eqt').onclick=e=>{S.showEq=!S.showEq;e.target.classList.toggle('on',S.showEq);save();draw()};
+
+/* ============ orders ============ */
+document.getElementById('pad').onclick=e=>{
+  const a=e.target.dataset.a;if(!a||!S.m1.length)return;
+  const px=price();
+  if(a==='buy')fill(1,px);
+  else if(a==='sell')fill(-1,px);
+  else if(a==='flat')flat();
+  else{ // place a draggable stop a bit away from price, then drag it
+    const side=a==='buystop'?'buy':'sell';
+    const off=Math.max((V.p1-V.p0)*0.08,px*0.002);
+    S.stop={side,p:+(side==='buy'?px+off:px-off).toFixed(4)};
+    snapshot();
+  }
+  save();info();draw();
+};
+
+/* ============ pointer: drag stop / draw ============ */
+const xy=e=>{const r=cv.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top]};
+cv.addEventListener('pointerdown',e=>{
+  const[x,y]=xy(e);
+  if(y>V.ch)return;
+  if(S.stop&&Math.abs(y-yP(S.stop.p))<18){S.drag=true;cv.setPointerCapture(e.pointerId);return}
+  if(S.tool){
+    const p=[Tx(x),pY(y)];
+    S.cur=S.tool==='pen'?{k:'pen',p:[p]}:{k:S.tool,p:[p,p]};
+    cv.setPointerCapture(e.pointerId);
+  }
+});
+cv.addEventListener('pointermove',e=>{
+  const[x,y]=xy(e);
+  if(S.drag){S.stop.p=+pY(y).toFixed(4);draw();return}
+  if(!S.cur)return;
+  const p=[Tx(x),pY(y)];
+  if(S.cur.k==='pen')S.cur.p.push(p);else S.cur.p[1]=p;
+  draw();
+});
+const endPtr=()=>{
+  if(S.drag){S.drag=false;snapshot();save();draw()}
+  if(S.cur){if(S.cur.k!=='pen'||S.cur.p.length>1)S.draw.push(S.cur);S.cur=null;save();draw()}
+};
+cv.addEventListener('pointerup',endPtr);cv.addEventListener('pointercancel',endPtr);
+
+/* ============ stats ============ */
+function maxDD(arr){let pk=-1e18,dd=0;for(const v of arr){if(v>pk)pk=v;if(pk>0)dd=Math.max(dd,(pk-v)/pk)}return dd*100}
+function showStats(){
+  const eq=S.eq.slice(S.start,S.i+1).filter(v=>v!=null);
+  if(eq.length<2&&!S.trades.length){return alert('Nothing to report yet — step forward first.')}
+  const endEq=equity(),pl=endEq-CASH0,ret=pl/CASH0*100;
+  const p0=S.m1[S.start].c,pn=price(),bh=CASH0*(pn/p0),bhPl=bh-CASH0,bhRet=bhPl/CASH0*100;
+  const bhCurve=S.m1.slice(S.start,S.i+1).map(b=>CASH0*(b.c/p0));
+  const closed=S.trades.filter(t=>t.k==='close');
+  const wins=closed.filter(t=>t.pnl>0).length;
+  const gp=closed.filter(t=>t.pnl>0).reduce((a,t)=>a+t.pnl,0);
+  const gl=-closed.filter(t=>t.pnl<=0).reduce((a,t)=>a+t.pnl,0);
+  const dd=maxDD(eq),bdd=maxDD(bhCurve);
+  const f=n=>n.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const c=v=>`<span class="${v>=0?'pos':'neg'}">${v>=0?'+':''}${f(v)}</span>`;
+  const bars=S.i-S.start+1;
+  document.getElementById('box').innerHTML=`<h3>${S.sym} — session stats</h3><table>
+   <tr><td>Period</td><td>${new Date(S.m1[S.start].t).toLocaleString()} → ${new Date(S.m1[S.i].t).toLocaleString()}</td></tr>
+   <tr><td>Bars replayed (1m)</td><td>${bars}</td></tr>
+   <tr><td>Cash start → end</td><td>${f(CASH0)} → <b>${f(endEq)}</b></td></tr>
+   <tr><td>P/L</td><td>${c(pl)} (${c(ret)}%)</td></tr>
+   <tr><td>Max drawdown</td><td class="neg">-${f(dd)}%</td></tr>
+   <tr><td>Buy &amp; hold P/L</td><td>${c(bhPl)} (${c(bhRet)}%)</td></tr>
+   <tr><td>Buy &amp; hold drawdown</td><td class="neg">-${f(bdd)}%</td></tr>
+   <tr><td><b>vs benchmark</b></td><td>${c(ret-bhRet)}% · DD ${c(bdd-dd)}% better</td></tr>
+   <tr><td>Closed trades</td><td>${closed.length}</td></tr>
+   <tr><td>Win rate</td><td>${closed.length?f(wins/closed.length*100):'0.00'}%</td></tr>
+   <tr><td>Profit factor</td><td>${gl>0?f(gp/gl):(gp>0?'∞':'0.00')}</td></tr>
+   <tr><td>Avg trade</td><td>${closed.length?c(closed.reduce((a,t)=>a+t.pnl,0)/closed.length):'-'}</td></tr>
+   <tr><td>Open position</td><td>${S.qty?(S.qty>0?'LONG ':'SHORT ')+Math.abs(S.qty)+' @ '+f(S.entry):'flat'}</td></tr>
+  </table><p style="font:11px system-ui;color:#8b949e">Benchmark = buy &amp; hold ${S.sym} over the same replayed period, same starting cash.</p>
+  <button onclick="document.getElementById('modal').style.display='none'" style="width:100%;padding:11px;margin-top:8px;background:#1b2230;color:#c9d1d9;border:1px solid #2b3545;border-radius:7px">Close</button>`;
+  document.getElementById('modal').style.display='flex';
+}
+document.getElementById('stats').onclick=showStats;
+document.getElementById('modal').onclick=e=>{if(e.target.id==='modal')e.currentTarget.style.display='none'};
+
+/* ============ session reset ============ */
+document.getElementById('reset').onclick=()=>{
+  if(!S.m1.length||!confirm('Reset session? Trades, equity and position are wiped. Drawings stay.'))return;
+  stop();
+  S.cash=CASH0;S.qty=0;S.entry=0;S.stop=null;S.trades=[];S.eq=[];S.snap=[];
+  S.i=S.start;snapshot();save();info();draw();
+};
+
+/* ============ persist ============ */
+let saveT;
+function save(){clearTimeout(saveT);saveT=setTimeout(()=>{if(S.sym)put('S:'+S.sym,{
+  tf:S.tf,i:S.i,start:S.start,cash:S.cash,qty:S.qty,entry:S.entry,stop:S.stop,
+  trades:S.trades,eq:S.eq,snap:S.snap,draw:S.draw,showEq:S.showEq})},300)}
+
+/* ============ symbols ============ */
+async function refresh(sel){
+  const ks=(await keys()).filter(k=>k.startsWith('B:')).map(k=>k.slice(2)).sort();
+  const sy=document.getElementById('sym');
+  sy.innerHTML=ks.map(k=>`<option>${k}</option>`).join('');
+  if(ks.length){sy.value=sel&&ks.includes(sel)?sel:ks[0];await open(sy.value)}
+  else{S.sym=null;S.m1=[];info();draw()}
+}
+async function open(sym){
+  stop();
+  S.sym=sym;S.m1=await get('B:'+sym)||[];
+  const s=await get('S:'+sym)||{};
+  S.tf=s.tf||5;S.start=s.start??Math.min(60,Math.max(0,S.m1.length-1));
+  S.i=Math.min(s.i??S.start,S.m1.length-1);
+  S.cash=s.cash??CASH0;S.qty=s.qty||0;S.entry=s.entry||0;S.stop=s.stop||null;
+  S.trades=s.trades||[];S.eq=s.eq||[];S.snap=s.snap||[];S.draw=s.draw||[];
+  S.showEq=s.showEq!==false;
+  if(!S.snap[S.i])snapshot();
+  tfsel.value=S.tf;document.getElementById('eqt').classList.toggle('on',S.showEq);
+  info();draw();
+}
+document.getElementById('sym').onchange=e=>open(e.target.value);
+document.getElementById('load').onclick=()=>document.getElementById('file').click();
+document.getElementById('file').onchange=async e=>{
+  let last;
+  for(const f of e.target.files){
+    const bars=parseCSV(await f.text());
+    if(!bars.length){alert('no bars parsed in '+f.name);continue}
+    last=f.name.replace(/\.[^.]+$/,'').toUpperCase();
+    await put('B:'+last,bars);await del('S:'+last);
+  }
+  e.target.value='';refresh(last);
+};
+document.getElementById('del').onclick=async()=>{
+  if(!S.sym||!confirm('Delete '+S.sym+' and its session?'))return;
+  await del('B:'+S.sym);await del('S:'+S.sym);refresh();
+};
+
+/* ============ self check (index.html?test) ============ */
+function test(){
+  const csv='time,open,high,low,close,volume\n2024-01-01 09:30,10,11,9,10.5,100\n'+
+            '2024-01-01 09:31,10.5,12,10,11,200\n2024-01-01 09:32,11,11.5,8,9,300';
+  const b=parseCSV(csv);
+  console.assert(b.length===3&&b[1].c===11,'parse');
+  console.assert(b[0].d===100&&b[2].d===-300,'delta fallback');
+  S.m1=b;S.i=2;S.tf=5;let a=agg();
+  console.assert(a.length===1&&a[0].o===10&&a[0].h===12&&a[0].l===8&&a[0].c===9&&a[0].v===600,'agg');
+  S.i=1;a=agg();console.assert(a[0].c===11&&a[0].l===9,'partial agg');
+  // trading: all-in long on bar 1, protective sell stop at 9.5, stopped out on bar 3
+  S.start=0;S.i=0;S.cash=CASH0;S.qty=0;S.entry=0;S.trades=[];S.eq=[];S.snap=[];snapshot();
+  fill(1,10.5);                                  // close of bar 1
+  console.assert(S.qty===952&&Math.abs(S.cash-(10000-952*10.5))<1e-9,'size '+S.qty);
+  S.stop={side:'sell',p:9.5};
+  S.i=1;checkStop(b[1]);snapshot();              // bar 2 low 10 -> no trigger
+  console.assert(S.qty===952&&S.stop,'stop must not fire on bar 2');
+  const eq1=S.eq[1];
+  S.i=2;checkStop(b[2]);snapshot();              // bar 3 low 8 -> triggers at 9.5
+  console.assert(S.qty===0&&Math.abs(equity()-(10000+952*(9.5-10.5)))<1e-6,'stop out eq '+equity());
+  // rewind to bar 2 restores the open position and truncates the curve
+  restore(1);S.i=1;
+  console.assert(S.qty===952&&S.eq.length===2&&Math.abs(S.eq[1]-eq1)<1e-9,'restore');
+  console.assert(S.trades.length===1&&S.trades[0].k==='open','rewind drops the stop-out trade');
+  console.assert(Math.abs(maxDD([100,120,90,110])-25)<1e-9,'maxDD');
+  S.m1=[];S.i=0;S.qty=0;S.cash=CASH0;S.trades=[];S.eq=[];S.snap=[];S.stop=null;
+  alert('self-check done — console shows any failures');
+}
+
+(async()=>{await idb();resize();await refresh();
+  if(location.search.includes('test'))test();
+  if('serviceWorker'in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+})();
+</script>
+</body>
+</html>
